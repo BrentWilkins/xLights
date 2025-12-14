@@ -1,0 +1,305 @@
+name: macOS Release
+
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to build (tag, branch, or commit SHA)'
+        required: true
+        default: '2025.13'
+        type: string
+
+jobs:
+  build-macos:
+    runs-on: macos-14  # Apple Silicon native runner
+    timeout-minutes: 120  # 2 hours should be enough with pre-built dependencies
+
+    steps:
+      - name: Checkout xLights
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          submodules: 'recursive'
+          fetch-depth: 0  # Full history for git describe
+
+      - name: Extract version and dependency tag
+        id: version
+        run: |
+          # Determine git ref being built
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            REF="${{ github.event.inputs.ref }}"
+          else
+            # Extract from tag (e.g., refs/tags/2025.13 -> 2025.13)
+            REF="${GITHUB_REF#refs/tags/}"
+          fi
+
+          # Extract version number
+          if [[ "$REF" =~ ^[0-9]{4}\.[0-9]{2} ]]; then
+            VERSION="$REF"
+          else
+            # Use git describe for non-tag refs
+            VERSION=$(git describe --tags --always)
+          fi
+
+          # Determine dependency tag from README.macOS
+          if [ -f macOS/README.macOS ]; then
+            DEPS_TAG=$(grep "recurse-submodules" macOS/README.macOS | grep -o "xlights_[0-9]*\.[0-9]*" | head -1)
+          else
+            # Fallback to version-based tag
+            DEPS_TAG="xlights_${VERSION}"
+          fi
+
+          # Determine wxWidgets tag from README.macOS
+          WX_TAG=$(grep "recurse-submodules" macOS/README.macOS | grep -o "xlights_[0-9]*\.[0-9]*" | head -1 || echo "xlights_2025.14")
+
+          echo "ref=${REF}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "deps_tag=${DEPS_TAG}" >> $GITHUB_OUTPUT
+          echo "wx_tag=${WX_TAG}" >> $GITHUB_OUTPUT
+
+          echo "Building version: ${VERSION}"
+          echo "Using dependencies: ${DEPS_TAG}"
+          echo "Using wxWidgets: ${WX_TAG}"
+
+      - name: Set environment variables
+        run: |
+          echo "MACOSX_DEPLOYMENT_TARGET=10.14" >> $GITHUB_ENV
+          echo "BUILD_HOST=arm" >> $GITHUB_ENV
+
+      - name: Cache pre-built dependencies
+        uses: actions/cache@v4
+        id: cache-deps
+        with:
+          path: |
+            /opt/local/lib
+            /opt/local/include
+            /opt/local/bin
+          key: ${{ runner.os }}-deps-${{ steps.version.outputs.deps_tag }}
+          restore-keys: |
+            ${{ runner.os }}-deps-
+
+      - name: Download and extract pre-built dependencies
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          echo "Downloading dependencies: ${{ steps.version.outputs.deps_tag }}"
+
+          # Create /opt/local directories
+          sudo mkdir -p /opt/local/lib /opt/local/include /opt/local/bin
+          sudo chgrp -R staff /opt/local
+          sudo chmod -R g+w /opt/local
+
+          # Download dependencies tarball
+          DEPS_URL="https://github.com/xLightsSequencer/xLights-macOS-dependencies/releases/download/${{ steps.version.outputs.deps_tag }}/xLights-macOS-dependencies.tar.zst"
+          echo "Downloading from: ${DEPS_URL}"
+
+          curl -L "${DEPS_URL}" --output xLights-macOS-dependencies.tar.zst
+
+          # Extract to /opt/local (tar.zst format)
+          # The tarball contains bin/, lib/, include/, etc. directories
+          tar -xf xLights-macOS-dependencies.tar.zst
+
+          # Move contents to /opt/local
+          if [ -d "xLights-macOS-dependencies/lib" ]; then
+            cp -R xLights-macOS-dependencies/* /opt/local/
+          else
+            echo "Error: Unexpected tarball structure"
+            ls -la xLights-macOS-dependencies/
+            exit 1
+          fi
+
+          # Verify extraction
+          ls -lh /opt/local/lib/ | head -20
+
+          # Clean up
+          rm -rf xLights-macOS-dependencies xLights-macOS-dependencies.tar.zst
+
+      - name: Verify dependencies
+        run: |
+          echo "Checking for key dependency files..."
+          ls -lh /opt/local/include/lualib.h || echo "WARNING: lualib.h not found"
+          ls -lh /opt/local/lib/liblog4cpp.a || echo "WARNING: liblog4cpp.a not found"
+          ls -lh /opt/local/lib/libavcodec.a || echo "WARNING: libavcodec.a not found"
+
+      - name: Clone wxWidgets
+        if: steps.cache-wxwidgets.outputs.cache-hit != 'true'
+        run: |
+          cd ~
+          git clone --recurse-submodules -b ${{ steps.version.outputs.wx_tag }} \
+            --depth 1 --shallow-submodules \
+            https://github.com/xLightsSequencer/wxWidgets wxWidgets
+
+      - name: Cache wxWidgets
+        uses: actions/cache@v4
+        id: cache-wxwidgets
+        with:
+          path: |
+            /opt/local/lib/libwx*.a
+            /opt/local/lib/wx
+            /opt/local/include/wx-3.3
+          key: ${{ runner.os }}-wxwidgets-${{ steps.version.outputs.wx_tag }}-${{ hashFiles('macOS/scripts/BuildWxWigetsRelease.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-wxwidgets-${{ steps.version.outputs.wx_tag }}-
+
+      - name: Build wxWidgets
+        if: steps.cache-wxwidgets.outputs.cache-hit != 'true'
+        working-directory: ~/wxWidgets
+        run: |
+          ./configure \
+            --disable-debug_flag --enable-debug_info --enable-optimise \
+            --prefix=/opt/local \
+            --enable-universal_binary=x86_64,arm64 \
+            --with-osx_cocoa --with-macosx-version-min=10.14 \
+            --with-opengl --enable-webview --enable-webviewwebkit \
+            --with-cxx=17 --enable-cxx11 --enable-std_containers \
+            --with-expat=builtin --with-zlib=builtin --with-libjpeg=builtin \
+            --disable-shared --enable-backtrace --enable-exceptions
+
+          make -j 4
+          make install
+
+          # Remove any dylib files to ensure static linking
+          rm -f /opt/local/lib/libwx*.dylib
+
+      - name: Install signing certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE }}
+          CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          # Skip if no certificate provided
+          if [ -z "$CERTIFICATE_BASE64" ]; then
+            echo "No signing certificate provided, skipping..."
+            exit 0
+          fi
+
+          echo "Installing signing certificate..."
+
+          # Create temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PWD=$(openssl rand -base64 32)
+
+          security create-keychain -p "$KEYCHAIN_PWD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PWD" $KEYCHAIN_PATH
+
+          # Import certificate
+          echo "$CERTIFICATE_BASE64" | base64 --decode > certificate.p12
+          security import certificate.p12 -P "$CERTIFICATE_PWD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          # Clean up certificate file
+          rm certificate.p12
+
+      - name: Build xLights
+        working-directory: ${{ github.workspace }}/macOS
+        run: |
+          # Create version file
+          echo "static const wxString xlights_version_string  = \"${{ steps.version.outputs.version }}\";" > ../xLights/xlights_build_version.h
+          touch ../xLights/xLightsVersion.h
+
+          # Build with or without signing
+          if [ -n "${{ secrets.DEVELOPMENT_TEAM }}" ]; then
+            echo "Building with code signing..."
+            xcodebuild -scheme xLights -configuration Release \
+              CODE_SIGN_STYLE=Manual \
+              DEVELOPMENT_TEAM=${{ secrets.DEVELOPMENT_TEAM }} \
+              CODE_SIGN_IDENTITY="Developer ID Application"
+          else
+            echo "Building without code signing..."
+            xcodebuild -scheme xLights -configuration Release
+          fi
+
+      - name: Verify build outputs
+        run: |
+          echo "Build outputs:"
+          ls -lh ${{ github.workspace }}/macOS/build/Release/
+
+          echo ""
+          echo "xLights binary info:"
+          file ${{ github.workspace }}/macOS/build/Release/xLights.app/Contents/MacOS/xLights
+
+          echo ""
+          echo "Universal binary verification:"
+          lipo -info ${{ github.workspace }}/macOS/build/Release/xLights.app/Contents/MacOS/xLights
+
+      - name: Create DMG
+        working-directory: ${{ github.workspace }}/macOS/build/Release
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Create DMG
+          hdiutil create -size 192m -fs HFS+ -volname "xLights-${VERSION}" xLights.dmg
+          hdiutil attach xLights.dmg
+
+          # Copy applications
+          cp -a xLights.app "/Volumes/xLights-${VERSION}/"
+
+          # Copy xFade if it exists
+          if [ -f xFade.app/Contents/MacOS/xFade ]; then
+            cp -a xFade.app "/Volumes/xLights-${VERSION}/"
+          fi
+
+          # Create Applications symlink
+          ln -s /Applications "/Volumes/xLights-${VERSION}/Applications"
+
+          # Detach and compress
+          DEVS=$(hdiutil attach xLights.dmg | cut -f 1)
+          DEV=$(echo $DEVS | cut -f 1 -d ' ')
+          hdiutil detach $DEV
+          hdiutil convert xLights.dmg -format UDZO -o "xLights-${VERSION}.dmg"
+
+          # Sign DMG if credentials available
+          if [ -n "${{ secrets.DEVELOPMENT_TEAM }}" ]; then
+            echo "Signing DMG..."
+            codesign --force --sign "Developer ID Application" "xLights-${VERSION}.dmg"
+            spctl -a -t open --context context:primary-signature -v "xLights-${VERSION}.dmg" || true
+          fi
+
+          ls -lh "xLights-${VERSION}.dmg"
+
+      - name: Notarize DMG
+        env:
+          NOTARIZE_EMAIL: ${{ secrets.NOTARIZE_EMAIL }}
+          NOTARIZE_PWD: ${{ secrets.NOTARIZE_PWD }}
+          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
+        working-directory: ${{ github.workspace }}/macOS/build/Release
+        run: |
+          # Skip if no notarization credentials provided
+          if [ -z "$NOTARIZE_EMAIL" ] || [ -z "$NOTARIZE_PWD" ]; then
+            echo "No notarization credentials provided, skipping..."
+            exit 0
+          fi
+
+          echo "Notarizing DMG..."
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Store credentials in keychain profile
+          xcrun notarytool store-credentials "xLights-CI" \
+            --apple-id "$NOTARIZE_EMAIL" \
+            --password "$NOTARIZE_PWD" \
+            --team-id "$DEVELOPMENT_TEAM"
+
+          # Submit for notarization (--wait makes it synchronous)
+          echo "Submitting DMG for notarization..."
+          xcrun notarytool submit --keychain-profile "xLights-CI" --wait "xLights-${VERSION}.dmg"
+
+          # Staple notarization ticket
+          echo "Stapling notarization ticket..."
+          xcrun stapler staple -v "xLights-${VERSION}.dmg"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xLights-macOS-${{ steps.version.outputs.version }}
+          path: ${{ github.workspace }}/macOS/build/Release/xLights-*.dmg
+          retention-days: 90
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          artifacts: ${{ github.workspace }}/macOS/build/Release/xLights-*.dmg
+          token: ${{ secrets.GITHUB_TOKEN }}
