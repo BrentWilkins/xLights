@@ -84,23 +84,34 @@ jobs:
           sudo chgrp -R staff /opt/local
           sudo chmod -R g+w /opt/local
 
-          # Download dependencies tarball
-          DEPS_URL="https://github.com/xLightsSequencer/xLights-macOS-dependencies/releases/download/${{ steps.version.outputs.deps_tag }}/xLights-macOS-dependencies.tar.zst"
-          echo "Downloading from: ${DEPS_URL}"
+          # Try to download matching dependency tag first
+          DEPS_TAG="${{ steps.version.outputs.deps_tag }}"
+          DEPS_URL="https://github.com/xLightsSequencer/xLights-macOS-dependencies/releases/download/${DEPS_TAG}/xLights-macOS-dependencies.tar.zst"
+          echo "Trying dependency tag: ${DEPS_TAG}"
+          echo "URL: ${DEPS_URL}"
 
           # Download with error checking (-f fails on HTTP errors)
-          if ! curl -f -L "${DEPS_URL}" --output xLights-macOS-dependencies.tar.zst; then
-            echo ""
-            echo "ERROR: Failed to download dependencies for tag: ${{ steps.version.outputs.deps_tag }}"
-            echo ""
-            echo "This likely means the dependency release doesn't exist yet."
-            echo "Available dependency releases: https://github.com/xLightsSequencer/xLights-macOS-dependencies/releases"
-            echo ""
-            echo "To fix this:"
-            echo "  1. Create a matching dependency release: ${{ steps.version.outputs.deps_tag }}"
-            echo "  2. Or use a git ref that matches an existing dependency release (e.g., 2025.13)"
-            echo ""
-            exit 1
+          if ! curl -f -L "${DEPS_URL}" --output xLights-macOS-dependencies.tar.zst 2>/dev/null; then
+            echo "Dependency tag ${DEPS_TAG} not found, falling back to latest release..."
+
+            # Get latest release tag from GitHub API
+            LATEST_DEPS=$(curl -s https://api.github.com/repos/xLightsSequencer/xLights-macOS-dependencies/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+
+            if [ -z "$LATEST_DEPS" ]; then
+              echo "ERROR: Could not determine latest dependency release"
+              echo "Available releases: https://github.com/xLightsSequencer/xLights-macOS-dependencies/releases"
+              exit 1
+            fi
+
+            echo "Using latest dependency release: ${LATEST_DEPS}"
+            DEPS_URL="https://github.com/xLightsSequencer/xLights-macOS-dependencies/releases/download/${LATEST_DEPS}/xLights-macOS-dependencies.tar.zst"
+
+            if ! curl -f -L "${DEPS_URL}" --output xLights-macOS-dependencies.tar.zst; then
+              echo "ERROR: Failed to download latest dependency release: ${LATEST_DEPS}"
+              exit 1
+            fi
+          else
+            echo "Found matching dependency release: ${DEPS_TAG}"
           fi
 
           # Verify download succeeded (check file size)
