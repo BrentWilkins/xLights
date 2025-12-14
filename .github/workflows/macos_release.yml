@@ -52,17 +52,12 @@ jobs:
             DEPS_TAG="xlights_${VERSION}"
           fi
 
-          # Determine wxWidgets tag from README.macOS
-          WX_TAG=$(grep "recurse-submodules" macOS/README.macOS | grep -o "xlights_[0-9]*\.[0-9]*" | head -1 || echo "xlights_2025.14")
-
           echo "ref=${REF}" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "deps_tag=${DEPS_TAG}" >> $GITHUB_OUTPUT
-          echo "wx_tag=${WX_TAG}" >> $GITHUB_OUTPUT
 
           echo "Building version: ${VERSION}"
           echo "Using dependencies: ${DEPS_TAG}"
-          echo "Using wxWidgets: ${WX_TAG}"
 
       - name: Set environment variables
         run: |
@@ -122,45 +117,6 @@ jobs:
           ls -lh /opt/local/include/lualib.h || echo "WARNING: lualib.h not found"
           ls -lh /opt/local/lib/liblog4cpp.a || echo "WARNING: liblog4cpp.a not found"
           ls -lh /opt/local/lib/libavcodec.a || echo "WARNING: libavcodec.a not found"
-
-      - name: Cache wxWidgets
-        uses: actions/cache@v4
-        id: cache-wxwidgets
-        with:
-          path: |
-            /opt/local/lib/libwx*.a
-            /opt/local/lib/wx
-            /opt/local/include/wx-3.3
-          key: ${{ runner.os }}-wxwidgets-${{ steps.version.outputs.wx_tag }}-${{ hashFiles('macOS/scripts/BuildWxWigetsRelease.sh') }}
-          restore-keys: |
-            ${{ runner.os }}-wxwidgets-${{ steps.version.outputs.wx_tag }}-
-
-      - name: Clone wxWidgets
-        if: steps.cache-wxwidgets.outputs.cache-hit != 'true'
-        run: |
-          git clone --recurse-submodules -b ${{ steps.version.outputs.wx_tag }} \
-            --depth 1 --shallow-submodules \
-            https://github.com/xLightsSequencer/wxWidgets $HOME/wxWidgets
-
-      - name: Build wxWidgets
-        if: steps.cache-wxwidgets.outputs.cache-hit != 'true'
-        run: |
-          cd $HOME/wxWidgets
-          ./configure \
-            --disable-debug_flag --enable-debug_info --enable-optimise \
-            --prefix=/opt/local \
-            --enable-universal_binary=x86_64,arm64 \
-            --with-osx_cocoa --with-macosx-version-min=10.14 \
-            --with-opengl --enable-webview --enable-webviewwebkit \
-            --with-cxx=17 --enable-cxx11 --enable-std_containers \
-            --with-expat=builtin --with-zlib=builtin --with-libjpeg=builtin \
-            --disable-shared --enable-backtrace --enable-exceptions
-
-          make -j 4
-          make install
-
-          # Remove any dylib files to ensure static linking
-          rm -f /opt/local/lib/libwx*.dylib
 
       - name: Install signing certificate
         env:
