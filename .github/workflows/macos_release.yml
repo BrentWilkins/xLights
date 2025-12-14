@@ -47,9 +47,19 @@ jobs:
           # Determine dependency tag from README.macOS
           if [ -f macOS/README.macOS ]; then
             DEPS_TAG=$(grep "recurse-submodules" macOS/README.macOS | grep -o "xlights_[0-9]*\.[0-9]*" | head -1)
-          else
-            # Fallback to version-based tag
-            DEPS_TAG="xlights_${VERSION}"
+          fi
+
+          # If not found or empty, try to derive from version
+          if [ -z "$DEPS_TAG" ]; then
+            if [[ "$VERSION" =~ ^[0-9]{4}\.[0-9]{2} ]]; then
+              # For release versions, use matching dependency tag
+              DEPS_TAG="xlights_${VERSION}"
+            else
+              # For non-release builds, find the latest release tag from git
+              LATEST_TAG=$(git tag --list "[0-9][0-9][0-9][0-9].[0-9][0-9]" --sort=-version:refname | head -1)
+              DEPS_TAG="xlights_${LATEST_TAG}"
+              echo "Warning: Using latest dependency tag for non-release build: ${DEPS_TAG}"
+            fi
           fi
 
           echo "ref=${REF}" >> $GITHUB_OUTPUT
@@ -61,7 +71,6 @@ jobs:
 
       - name: Set environment variables
         run: |
-          echo "MACOSX_DEPLOYMENT_TARGET=10.14" >> $GITHUB_ENV
           echo "BUILD_HOST=arm" >> $GITHUB_ENV
 
       - name: Cache pre-built dependencies
