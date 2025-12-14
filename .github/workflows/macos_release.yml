@@ -123,14 +123,6 @@ jobs:
           ls -lh /opt/local/lib/liblog4cpp.a || echo "WARNING: liblog4cpp.a not found"
           ls -lh /opt/local/lib/libavcodec.a || echo "WARNING: libavcodec.a not found"
 
-      - name: Clone wxWidgets
-        if: steps.cache-wxwidgets.outputs.cache-hit != 'true'
-        run: |
-          cd ~
-          git clone --recurse-submodules -b ${{ steps.version.outputs.wx_tag }} \
-            --depth 1 --shallow-submodules \
-            https://github.com/xLightsSequencer/wxWidgets wxWidgets
-
       - name: Cache wxWidgets
         uses: actions/cache@v4
         id: cache-wxwidgets
@@ -143,10 +135,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-wxwidgets-${{ steps.version.outputs.wx_tag }}-
 
+      - name: Clone wxWidgets
+        if: steps.cache-wxwidgets.outputs.cache-hit != 'true'
+        run: |
+          git clone --recurse-submodules -b ${{ steps.version.outputs.wx_tag }} \
+            --depth 1 --shallow-submodules \
+            https://github.com/xLightsSequencer/wxWidgets $HOME/wxWidgets
+
       - name: Build wxWidgets
         if: steps.cache-wxwidgets.outputs.cache-hit != 'true'
-        working-directory: ~/wxWidgets
         run: |
+          cd $HOME/wxWidgets
           ./configure \
             --disable-debug_flag --enable-debug_info --enable-optimise \
             --prefix=/opt/local \
