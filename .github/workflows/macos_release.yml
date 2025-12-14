@@ -44,23 +44,12 @@ jobs:
             VERSION=$(git describe --tags --always)
           fi
 
-          # Determine dependency tag from README.macOS
-          if [ -f macOS/README.macOS ]; then
-            DEPS_TAG=$(grep "recurse-submodules" macOS/README.macOS | grep -o "xlights_[0-9]*\.[0-9]*" | head -1)
-          fi
-
-          # If not found or empty, try to derive from version
-          if [ -z "$DEPS_TAG" ]; then
-            if [[ "$VERSION" =~ ^[0-9]{4}\.[0-9]{2} ]]; then
-              # For release versions, use matching dependency tag
-              DEPS_TAG="xlights_${VERSION}"
-            else
-              # For non-release builds, find the latest release tag from git
-              LATEST_TAG=$(git tag --list "[0-9][0-9][0-9][0-9].[0-9][0-9]" --sort=-version:refname | head -1)
-              DEPS_TAG="xlights_${LATEST_TAG}"
-              echo "Warning: Using latest dependency tag for non-release build: ${DEPS_TAG}"
-            fi
-          fi
+          # Determine dependency tag - use the git ref directly
+          # This allows building with matching dependency tags like:
+          #   git tag 2025.13 → xlights_2025.13
+          #   git tag test    → xlights_test
+          #   master          → xlights_master (if it exists)
+          DEPS_TAG="xlights_${REF}"
 
           echo "ref=${REF}" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
