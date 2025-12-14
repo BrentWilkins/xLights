@@ -88,7 +88,30 @@ jobs:
           DEPS_URL="https://github.com/xLightsSequencer/xLights-macOS-dependencies/releases/download/${{ steps.version.outputs.deps_tag }}/xLights-macOS-dependencies.tar.zst"
           echo "Downloading from: ${DEPS_URL}"
 
-          curl -L "${DEPS_URL}" --output xLights-macOS-dependencies.tar.zst
+          # Download with error checking (-f fails on HTTP errors)
+          if ! curl -f -L "${DEPS_URL}" --output xLights-macOS-dependencies.tar.zst; then
+            echo ""
+            echo "ERROR: Failed to download dependencies for tag: ${{ steps.version.outputs.deps_tag }}"
+            echo ""
+            echo "This likely means the dependency release doesn't exist yet."
+            echo "Available dependency releases: https://github.com/xLightsSequencer/xLights-macOS-dependencies/releases"
+            echo ""
+            echo "To fix this:"
+            echo "  1. Create a matching dependency release: ${{ steps.version.outputs.deps_tag }}"
+            echo "  2. Or use a git ref that matches an existing dependency release (e.g., 2025.13)"
+            echo ""
+            exit 1
+          fi
+
+          # Verify download succeeded (check file size)
+          FILE_SIZE=$(stat -f%z xLights-macOS-dependencies.tar.zst 2>/dev/null || stat -c%s xLights-macOS-dependencies.tar.zst)
+          if [ "$FILE_SIZE" -lt 1000000 ]; then
+            echo "ERROR: Downloaded file is too small ($FILE_SIZE bytes). Expected >1MB"
+            echo "File contents:"
+            head -20 xLights-macOS-dependencies.tar.zst
+            exit 1
+          fi
+          echo "Downloaded $FILE_SIZE bytes"
 
           # Extract to /opt/local (tar.zst format)
           # The tarball contains bin/, lib/, include/, etc. directories
